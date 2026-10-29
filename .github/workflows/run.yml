@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 110
     env:
-      SEORADAR_DEPLOY_KEY: ${{ secrets.SEORADAR_DEPLOY_KEY }}
-      DATA_REPO_GIT: git@github.com:greatyingzi/seo-radar.git
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DATA_REPO_GIT: git@github.com:greatyingzi/data-core-01.git
       TASK_GROUP: ${{ github.event.inputs.group }}
       WEEKLY: ${{ github.event.inputs.weekly }}
     steps:
@@ -28,7 +28,7 @@ jobs:
       - name: ssh key
         run: |
           mkdir -p ~/.ssh
-          echo "$SEORADAR_DEPLOY_KEY" > ~/.ssh/dk
+          echo "$DEPLOY_KEY" > ~/.ssh/dk
           chmod 600 ~/.ssh/dk
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
           git config --global user.name "ops-bot"

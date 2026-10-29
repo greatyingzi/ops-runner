@@ -3,12 +3,14 @@
 executes commands, commits artifacts back. No domain logic lives here."""
 import json, os, subprocess, sys, datetime
 
-DATA_REPO = os.environ.get("DATA_REPO_GIT", "git@github.com:greatyingzi/seo-radar.git")
+DATA_REPO = os.environ.get("DATA_REPO_GIT", "git@github.com:greatyingzi/data-core-01.git")
 DATA_DIR = os.path.join(os.getcwd(), "data")
+
+LOGBUF = []
 
 def sh(cmd, cwd=None):
     r = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True)
-    print(r.stdout[-2000:] if r.stdout else "", r.stderr[-800:] if r.returncode else "", sep="\n")
+    LOGBUF.append("$ %s\n%s\n%s" % (cmd, r.stdout or "", r.stderr or ""))
     return r.returncode
 
 def main():
@@ -30,8 +32,12 @@ def main():
     if os.environ.get("WEEKLY") == "1":
         for t in manifest.get("discovery_weekly", []): sh(t, cwd=DATA_DIR)
 
+    # task logs go into the private repo, never to CI logs
+    import datetime as _dt
+    os.makedirs(os.path.join(DATA_DIR, "ci_logs"), exist_ok=True)
+    open(os.path.join(DATA_DIR, "ci_logs", "run_%s.log" % _dt.datetime.utcnow().strftime("%Y%m%d_%H%M")), "w").write("\n\n".join(LOGBUF))
     cd = DATA_DIR
-    for f in manifest["artifacts"]:
+    for f in manifest["artifacts"] + ["ci_logs/"]:
         sh('git add "%s" 2>/dev/null || true' % f, cwd=cd)
     if sh('git diff --cached --quiet', cwd=cd) != 0:
         sh('git commit -m "run %s group=%s"' % (datetime.datetime.utcnow().strftime("%F %T"), group), cwd=cd)
