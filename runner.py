@@ -20,18 +20,6 @@ def main():
 
     manifest = json.load(open(os.path.join(DATA_DIR, "tasks", "manifest.json")))
 
-    # sync latest runner-side scripts into data checkout (code wins)
-    for f in os.listdir("."):
-        if f.endswith(".py") and f != "runner.py":
-            import shutil; shutil.copy(f, os.path.join(DATA_DIR, f))
-    if os.path.isdir("adapters"):
-        import shutil
-        dst = os.path.join(DATA_DIR, "adapters")
-        os.makedirs(dst, exist_ok=True)
-        for f in os.listdir("adapters"):
-            if f.endswith(".py") and f != "__init__.py":
-                shutil.copy(os.path.join("adapters", f), dst)
-
     group = os.environ.get("TASK_GROUP") or manifest["rotation"][datetime.datetime.utcnow().weekday() % len(manifest["rotation"])]
     tasks = manifest["always"] + manifest["groups"].get(group, [])
     print("group:", group, "tasks:", [t["name"] for t in tasks])
