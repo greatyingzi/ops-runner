@@ -23,7 +23,12 @@ def main():
     manifest = json.load(open(os.path.join(DATA_DIR, "tasks", "manifest.json")))
 
     group = os.environ.get("TASK_GROUP") or manifest["rotation"][datetime.datetime.utcnow().weekday() % len(manifest["rotation"])]
-    tasks = manifest["always"] + manifest["groups"].get(group, [])
+    def _norm_tasks(ts):
+        out = []
+        for t in ts:
+            out.append(t if isinstance(t, dict) else {"name": str(t)[:40], "cmd": str(t)})
+        return out
+    tasks = _norm_tasks(manifest["always"]) + _norm_tasks(manifest["groups"].get(group, []))
     print("group:", group, "tasks:", [t["name"] for t in tasks])
     for t in tasks:
         rc = sh(t["cmd"], cwd=DATA_DIR)
