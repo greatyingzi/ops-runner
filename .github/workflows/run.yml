@@ -1,0 +1,37 @@
+name: scheduled run
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+    inputs:
+      group: { description: "task group", default: "auto" }
+      weekly: { description: "run weekly discovery", default: "0" }
+permissions:
+  contents: read
+concurrency:
+  group: scheduled-run
+  cancel-in-progress: true
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      SEORADAR_DEPLOY_KEY: ${{ secrets.SEORADAR_DEPLOY_KEY }}
+      DATA_REPO_GIT: git@github.com:greatyingzi/seo-radar.git
+      TASK_GROUP: ${{ github.event.inputs.group }}
+      WEEKLY: ${{ github.event.inputs.weekly }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: ssh key
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SEORADAR_DEPLOY_KEY" > ~/.ssh/dk
+          chmod 600 ~/.ssh/dk
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git config --global user.name "ops-bot"
+          git config --global user.email "bot@users.noreply.github.com"
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/dk -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+      - run: python3 runner.py
