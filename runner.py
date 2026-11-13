@@ -21,6 +21,7 @@ STATE_F = os.path.join(DATA_DIR, "state", "last_run.json")
 SSH_DIR = os.path.expanduser("~/.ssh")
 BUDGET_MIN = float(os.environ.get("MAX_RUN_MINUTES", "95"))
 ONLY = (os.environ.get("ONLY_FILTER") or "").strip()
+FORCE = (os.environ.get("FORCE_FILTER") or "").strip() == "1"
 T0 = time.time()
 
 LOGBUF = []
@@ -117,7 +118,11 @@ def run_repo_task(repo, task, st):
     if ONLY and ONLY not in (key, repo): return
     every = float(task.get("every_minutes", 1440))
     last = float(st["tasks"].get(key, 0))
-    if time.time() - last < every * 3600:
+    if not FORCE and time.time() - last < every * 3600:
+        return
+    if task.get("force_only") and not FORCE:
+        return  # deploy 类任务只接受事件显式触发
+    if FORCE and (os.environ.get("ONLY_FILTER") or "").strip() not in ("", key, repo):
         return
     if elapsed_min() > BUDGET_MIN:
         log("… 预算用尽, %s 留到下次" % key); return

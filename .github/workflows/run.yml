@@ -7,10 +7,15 @@ on:
       only:
         description: "只跑 repo/name 或 legacy(空=全部到期判定)"
         default: ""
+      force:
+        description: "1=事件触发语义: 跳过 every_minutes 间隔闸"
+        default: ""
+  repository_dispatch:
+    types: [cron-task]   # 私有仓 push/tag → repository_dispatch 唤起; payload.client_payload={repo,task,force}
 permissions:
   contents: read
 concurrency:
-  group: scheduled-run
+  group: scheduled-run-${{ github.event_name }}-${{ github.event.inputs.only || github.event.client_payload.task || 'tick' }}
   cancel-in-progress: false
 jobs:
   run:
@@ -31,7 +36,8 @@ jobs:
       ALERT_SMTP_PASS: ${{ secrets.ALERT_SMTP_PASS }}
       ALERT_TO: ${{ secrets.ALERT_TO }}
       DATA_REPO_GIT: git@github.com:greatyingzi/data-core-01.git
-      ONLY_FILTER: ${{ github.event.inputs.only }}
+      ONLY_FILTER: ${{ github.event.inputs.only || github.event.client_payload.task || '' }}
+      FORCE_FILTER: ${{ github.event.inputs.force || github.event.client_payload.force || '' }}
       OPS_ADMIN_TOKEN: ${{ secrets.OPS_ADMIN_TOKEN }}
       AUTO_SYNC: "1"
     steps:
