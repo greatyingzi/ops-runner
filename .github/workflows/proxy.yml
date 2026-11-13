@@ -1,0 +1,71 @@
+name: deploy proxy
+# 事件面直连：webhook→Worker→repository_dispatch(site-deploy) → 本工作流。
+# 不走 runner.py/manifest（无轮询、无状态），适合 push/tag 即部署。
+# 私仓真名不写死：从 secrets.PROXY_SITE_REPO 读，GitHub 日志自动打码成 ***
+on:
+  repository_dispatch:
+    types: [site-deploy]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "main=生产 / cps-test=预览"
+        default: "cps-test"
+concurrency:
+  group: proxy-${{ github.event.client_payload.branch || github.event.inputs.branch }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SITE_REPO: ${{ secrets.PROXY_SITE_REPO }}
+      DEPLOY_KEY: ${{ secrets.PROXY_DEPLOY_KEY }}
+      BRANCH: ${{ github.event.client_payload.branch || github.event.inputs.branch || 'cps-test' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+      DRAMACPS_EMAIL: ${{ secrets.DRAMACPS_EMAIL }}
+      DRAMACPS_PASSWORD: ${{ secrets.DRAMACPS_PASSWORD }}
+    steps:
+      - name: 准备 ssh key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "$DEPLOY_KEY" > ~/.ssh/proxy_dk
+          chmod 600 ~/.ssh/proxy_dk
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/proxy_dk -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          git config --global user.name "proxy-bot"
+          git config --global user.email "bot@users.noreply.github.com"
+      - name: 拉站点仓(私有, 名走 secret)
+        run: git clone --depth 1 git@github.com:greatyingzi/"$SITE_REPO".git site
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: 依赖
+        run: pip install -q pykakasi Pillow
+      - name: 构建
+        working-directory: site
+        run: |
+          if [ "$BRANCH" = "main" ]; then BASE="https://tatescope.com/"; else BASE="https://cps-test.tatescope-jp.pages.dev/"; fi
+          echo "target=$BASE"
+          python build_cps.py --out dist --force --base-url "$BASE"
+          python catalog_db.py
+          python build_index.py --out dist
+          if [ "$BRANCH" = "main" ]; then
+            python scripts/export_dbx_bookids.py --out dist/data/dbx-bookids.json
+            python scripts/sentinel.py --data --site dist --reviews
+            python flywheel/gate_cps.py --site dist
+          else
+            ALLOW_DEV_BASE=1 python flywheel/gate_cps.py --site dist
+          fi
+      - name: 部署
+        working-directory: site
+        run: npx --yes wrangler@3 pages deploy dist --project-name=tatescope-jp --branch="$BRANCH" --commit-dirty=true
+      - name: 线上校验
+        run: |
+          if [ "$BRANCH" = "main" ]; then U="https://tatescope.com/"; else U="https://cps-test.tatescope-jp.pages.dev/"; fi
+          for _ in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 25 "$U")
+            echo "$U -> $code"; [ "$code" = "200" ] && exit 0; sleep 15
+          done; exit 1
