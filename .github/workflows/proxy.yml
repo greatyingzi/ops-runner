@@ -55,7 +55,8 @@ jobs:
           out.write("SITE_PROD=%s\n" % s.get("prod", ""))
           out.write("SITE_PREVIEW=%s\n" % s.get("preview", ""))
           out.write("SITE_PIP=%s\n" % s.get("pip", ""))
-          out.write("SITE_BUILD=%s\n" % s["build"])
+          base = s.get("prod") if os.environ.get("BRANCH") == "main" else s.get("preview")
+          out.write("SITE_BUILD=%s\n" % s["build"].replace("{BASE}", base or ""))
           out.write("SITE_GATE_PROD=%s\n" % s.get("gate_prod", ""))
           out.write("SITE_GATE_PREVIEW=%s\n" % s.get("gate_preview", ""))
           out.close()
@@ -85,10 +86,10 @@ jobs:
         run: pip install -q $SITE_PIP || true
       - name: 构建
         working-directory: site
+        env:
+          BASE: ${{ github.event.client_payload.branch == 'main' && 'https://tatescope.com/' || '' }}
         run: |
-          if [ "$BRANCH" = "main" ]; then BASE="$SITE_PROD"; else BASE="$SITE_PREVIEW"; fi
-          echo "target=$BASE"
-          BASE="$BASE" sh -c "$SITE_BUILD"
+          sh -c "$SITE_BUILD"
           if [ "$BRANCH" = "main" ]; then sh -c "$SITE_GATE_PROD"; else sh -c "$SITE_GATE_PREVIEW"; fi
       - name: 部署
         working-directory: site
