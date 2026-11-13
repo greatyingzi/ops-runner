@@ -55,8 +55,8 @@ jobs:
               f.write("SITE_BASE=%s\n" % base)
               f.write("CF_BRANCH=%s\n" % cf_branch)
               f.write("SITE_PIP=%s\n" % s.get("pip", ""))
-              f.write("SITE_BUILD=%s\n" % s["build"].replace("{BASE}", base))
-              f.write("SITE_GATE=%s\n" % (gate or ""))
+              f.write("SITE_CMD=%s\n" % s["build"].replace("{BASE}", base))
+              f.write("SITE_GATE_CMD=%s\n" % (gate or ""))
           print("site=%s env=%s base=%s branch=%s" % (site, envn, base, cf_branch))
           PY
       - name: 站点 deploy key
@@ -83,8 +83,8 @@ jobs:
       - name: 构建
         working-directory: site
         run: |
-          sh -c "$SITE_BUILD"
-          if [ -n "$SITE_GATE" ]; then sh -c "$SITE_GATE"; fi
+          sh -c "$SITE_CMD"
+          if [ -n "$SITE_GATE_CMD" ]; then sh -c "$SITE_GATE_CMD"; fi
       - name: 部署
         working-directory: site
         run: npx --yes wrangler@3 pages deploy dist --project-name="$SITE_PROJECT" --branch="$CF_BRANCH" --commit-dirty=true
