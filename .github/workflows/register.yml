@@ -1,0 +1,23 @@
+name: register repo
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "要接入/注销的私有仓名"
+        required: true
+      mode:
+        description: "register 或 remove"
+        default: "register"
+permissions:
+  contents: read
+jobs:
+  reg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q pynacl
+      - run: python3 register.py --repo "${{ github.event.inputs.repo }}" ${{ github.event.inputs.mode == 'remove' && '--remove' || '' }}
+        env:
+          OPS_ADMIN_TOKEN: ${{ secrets.OPS_ADMIN_TOKEN }}

@@ -32,6 +32,8 @@ jobs:
       ALERT_TO: ${{ secrets.ALERT_TO }}
       DATA_REPO_GIT: git@github.com:greatyingzi/data-core-01.git
       ONLY_FILTER: ${{ github.event.inputs.only }}
+      OPS_ADMIN_TOKEN: ${{ secrets.OPS_ADMIN_TOKEN }}
+      AUTO_SYNC: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

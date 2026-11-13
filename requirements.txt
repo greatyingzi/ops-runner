@@ -2,3 +2,4 @@ pymupdf>=1.24
 pykakasi
 Pillow
 requests
+pynacl

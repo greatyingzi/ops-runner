@@ -44,15 +44,34 @@ def ssh_env_for(repo):
     e["GIT_SSH_COMMAND"] = "ssh -i %s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" % key
     return e
 
-def write_keys():
+def mask(name):
+    """公开日志里对私有仓名脱敏(私有仓名外部不可枚举, 不该从日志泄露)."""
+    return (name[:2] + "***") if len(name) > 3 else name[:1] + "***"
+
+def mask_key(key):
+    repo, _, task = key.partition("/")
+    return "%s/%s" % (mask(repo), task) if task else mask(key)
+
+def write_keys(extra=None):
+    keys = {}
     raw = os.environ.get("DEPLOY_KEYS_JSON") or ""
-    if not raw:
+    if raw:
+        try:
+            keys.update(json.loads(raw))
+        except json.JSONDecodeError:
+            log("!! DEPLOY_KEYS_JSON 解析失败")
+    # hub 私有仓 state/deploy_keys.json 是事实源(register.py 维护), 与 env 合并
+    kf = os.path.join(DATA_DIR, "state", "deploy_keys.json")
+    if os.path.exists(kf):
+        try:
+            keys.update(json.load(open(kf)))
+        except Exception:
+            log("!! hub keys 文件解析失败")
+    if extra:
+        keys.update(extra)
+    if not keys:
         return
     os.makedirs(SSH_DIR, exist_ok=True)
-    try:
-        keys = json.loads(raw)
-    except json.JSONDecodeError:
-        log("!! DEPLOY_KEYS_JSON 解析失败"); return
     for repo, priv in keys.items():
         p = os.path.join(SSH_DIR, "dk_" + repo)
         with open(p, "w") as f: f.write(priv)
@@ -102,22 +121,22 @@ def run_repo_task(repo, task, st):
         return
     if elapsed_min() > BUDGET_MIN:
         log("… 预算用尽, %s 留到下次" % key); return
-    log("▶ 任务 %s (每%.0f分, 上次 %s)" % (key, every,
+    log("▶ 任务 %s (每%.0f分, 上次 %s)" % (mask_key(key), every,
         datetime.datetime.fromtimestamp(last).strftime("%m-%d %H:%M") if last else "从未"))
     miss = missing_needs(task)
     if miss:
-        log("SKIP %s: 缺环境变量 %s" % (key, ",".join(miss)))
+        log("SKIP %s: 缺环境变量 %s" % (mask_key(key), ",".join(miss)))
         LOGBUF.append("SKIP %s missing=%s" % (key, ",".join(miss)))
         st["tasks"][key] = time.time()
         return
     tdir = os.path.join(WORK, repo)
     if clone_repo(repo, tdir) != 0:
-        st["tasks"][key] = time.time(); log("!! %s clone 失败" % key); return
+        st["tasks"][key] = time.time(); log("!! %s clone 失败" % mask_key(key)); return
     for c in task.get("extra_clones") or []:
         cpath = os.path.join(tdir, c.get("path", "data"))
         crepo = c.get("git", "").rstrip(".git").rstrip("/").split("/")[-1]
         if clone_repo(crepo, cpath) != 0:
-            st["tasks"][key] = time.time(); log("!! %s extra clone 失败" % c.get("git")); return
+            st["tasks"][key] = time.time(); log("!! %s extra clone 失败" % mask(c.get("git").split("/")[-1].replace(".git",""))); return
     for p in task.get("pip") or []:
         sh("pip install -q %s" % p)
     reqf = os.path.join(tdir, "requirements.txt")
@@ -187,12 +206,47 @@ def prune_logs():
         try: os.remove(os.path.join(d, f))
         except Exception: pass
 
+def auto_sync_repos(manifest):
+    """repo-sync: 新私有仓自动接入(生成 stub, 不执行任何任务)."""
+    tok = (os.environ.get("OPS_ADMIN_TOKEN") or "").strip()
+    if (os.environ.get("AUTO_SYNC") or "1") != "1" or not tok:
+        return
+    reg = os.path.join(os.getcwd(), "register.py")
+    known = {e.get("repo") if isinstance(e, dict) else e for e in manifest.get("repos", [])}
+    try:
+        import urllib.request as _u
+        page, added = 1, []
+        while True:
+            req = _u.Request("https://api.github.com/user/repos?per_page=100&affiliation=owner&sort=pushed&page=%d" % page,
+                             headers={"Authorization": "token " + tok, "Accept": "application/vnd.github+json"})
+            rs = json.loads(_u.urlopen(req, timeout=30).read())
+            if not rs: break
+            for r in rs:
+                name = r["name"]
+                if name in known or name in ("ops-runner", "data-core-01"):
+                    continue
+                rc = subprocess.run([sys.executable, reg, "--repo", name, "--auto"],
+                                    env=dict(os.environ), capture_output=True, text=True)
+                out = (rc.stdout or rc.stderr or "").strip()
+                if rc.returncode == 0 and ("OK" in out or "已注册" in out):
+                    added.append(name); known.add(name)
+                if out:
+                    LOGBUF.append("repo-sync %s: %s" % (mask(name), out[:200]))
+            if len(rs) < 100: break
+            page += 1
+        if added:
+            log("repo-sync 新接入: %s" % ", ".join(mask(n) for n in added))
+        else:
+            log("repo-sync: 无新仓")
+    except Exception as e:
+        log("repo-sync err: %s" % e)
+
 def main():
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    write_keys()
     os.makedirs(WORK, exist_ok=True)
     if clone_repo("data-core-01", DATA_DIR) != 0:
         sys.exit("hub clone failed")
+    write_keys()
     manifest = json.load(open(os.path.join(DATA_DIR, "tasks", "manifest.json")))
     st = load_state()
     try:
@@ -203,7 +257,8 @@ def main():
                 try:
                     run_repo_task(repo, task, st)
                 except subprocess.TimeoutExpired:
-                    log("!! %s 超时被杀" % repo); st["tasks"]["%s/%s" % (repo, task.get("name","?"))] = time.time()
+                    log("!! %s 超时被杀" % mask(repo)); st["tasks"]["%s/%s" % (repo, task.get("name","?"))] = time.time()
+        auto_sync_repos(manifest)
         # 任务日志统一落 hub(有空闲节流: 无任务执行时只留一行状态)
         os.makedirs(os.path.join(DATA_DIR, "ci_logs"), exist_ok=True)
         acted = len(LOGBUF) > 1  # 除 hub clone 外还有别的命令
