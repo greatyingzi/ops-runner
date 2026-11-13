@@ -142,6 +142,21 @@ def run_repo_task(repo, task, st):
         crepo = c.get("git", "").rstrip(".git").rstrip("/").split("/")[-1]
         if clone_repo(crepo, cpath) != 0:
             st["tasks"][key] = time.time(); log("!! %s extra clone 失败" % mask(c.get("git").split("/")[-1].replace(".git",""))); return
+    if task.get("watch"):
+        # 轮询检测: HEAD sha(含 tag) 未变则跳过 —— 替代 webhook, 零外部设施
+        sha = subprocess.run("git rev-parse HEAD", shell=True, cwd=tdir,
+                             capture_output=True, text=True).stdout.strip()
+        tags = subprocess.run("git tag --points-at HEAD | tr '\n' ','", shell=True, cwd=tdir,
+                              capture_output=True, text=True).stdout.strip()
+        sig = "%s|%s" % (sha, tags)
+        prev = st.get("watch", {}).get(key, {})
+        if prev.get("sig") == sig and not FORCE:
+            log("SKIP %s: 无新提交 (%s)" % (mask_key(key), sha[:8]))
+            st.setdefault("watch", {})[key] = {"sig": sig, "at": time.time()}
+            st["tasks"][key] = time.time()
+            return
+        log("检测到变更 %s: %.8s → %.8s" % (mask_key(key), prev.get("sig") or "无", sha))
+        st.setdefault("watch", {})[key] = {"sig": sig, "at": time.time()}
     for p in task.get("pip") or []:
         sh("pip install -q %s" % p)
     reqf = os.path.join(tdir, "requirements.txt")
