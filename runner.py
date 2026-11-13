@@ -118,6 +118,11 @@ def run_repo_task(repo, task, st):
         crepo = c.get("git", "").rstrip(".git").rstrip("/").split("/")[-1]
         if clone_repo(crepo, cpath) != 0:
             st["tasks"][key] = time.time(); log("!! %s extra clone 失败" % c.get("git")); return
+    for p in task.get("pip") or []:
+        sh("pip install -q %s" % p)
+    reqf = os.path.join(tdir, "requirements.txt")
+    if os.path.exists(reqf):
+        sh("pip install -q -r requirements.txt", cwd=tdir)
     tmo = float(task.get("timeout_min", 90)) * 60
     env = dict(os.environ)
     for k, src in (task.get("env") or {}).items():
@@ -139,8 +144,9 @@ def run_repo_task(repo, task, st):
         for a in task.get("artifacts") or []:
             sh('git add "%s" 2>/dev/null || true' % a, cwd=cdir, env=cenv)
         if sh("git diff --cached --quiet", cwd=cdir, env=cenv) != 0:
-            sh('git commit -m "cron %s %s"' % (key, datetime.datetime.utcnow().strftime("%F %T")),
-               cwd=cdir, env=cenv)
+            msg = 'cron %s %s%s' % (key, datetime.datetime.utcnow().strftime("%F %T"),
+                                    " [skip ci]" if task.get("skip_ci") else "")
+            sh('git commit -m "%s"' % msg, cwd=cdir, env=cenv)
             sh("git push origin main", cwd=cdir, env=cenv)
             log("   artifacts 回写完成")
         else:
@@ -164,12 +170,22 @@ def run_legacy(manifest, st):
         if datetime.datetime.utcnow().weekday() == 0:
             sh(t, cwd=DATA_DIR, timeout=60*60)
     cd = DATA_DIR
+    hub_env = ssh_env_for("data-core-01")
     for f in manifest["artifacts"] + ["ci_logs/"]:
-        sh('git add "%s" 2>/dev/null || true' % f, cwd=cd)
-    if sh("git diff --cached --quiet", cwd=cd) != 0:
-        sh('git commit -m "legacy run %s group=%s"' % (today, group), cwd=cd)
-        sh("git push origin main", cwd=cd)
+        sh('git add "%s" 2>/dev/null || true' % f, cwd=cd, env=hub_env)
+    if hub_env and sh("git diff --cached --quiet", cwd=cd, env=hub_env) != 0:
+        sh('git commit -m "legacy run %s group=%s"' % (today, group), cwd=cd, env=hub_env)
+        sh("git push origin main", cwd=cd, env=hub_env)
     st["legacy"] = today
+
+def prune_logs():
+    """ci_logs 只保留最近 300 份, 防止 15 分钟粒度把 hub 刷爆."""
+    d = os.path.join(DATA_DIR, "ci_logs")
+    if not os.path.isdir(d): return
+    fs = sorted(f for f in os.listdir(d) if f.endswith(".log"))
+    for f in fs[:-300]:
+        try: os.remove(os.path.join(d, f))
+        except Exception: pass
 
 def main():
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -188,14 +204,24 @@ def main():
                     run_repo_task(repo, task, st)
                 except subprocess.TimeoutExpired:
                     log("!! %s 超时被杀" % repo); st["tasks"]["%s/%s" % (repo, task.get("name","?"))] = time.time()
-        # 任务日志统一落 hub
+        # 任务日志统一落 hub(有空闲节流: 无任务执行时只留一行状态)
         os.makedirs(os.path.join(DATA_DIR, "ci_logs"), exist_ok=True)
-        open(os.path.join(DATA_DIR, "ci_logs", "run_%s.log" % ts), "w").write("\n\n".join(LOGBUF))
+        acted = len(LOGBUF) > 1  # 除 hub clone 外还有别的命令
+        body = "\n\n".join(LOGBUF)
+        if not acted:
+            body = ("idle %s\n" % ts) + body
+        open(os.path.join(DATA_DIR, "ci_logs", "run_%s.log" % ts), "w").write(body)
+        prune_logs()
         save_state(st)
-        sh('git add state/ ci_logs/ 2>/dev/null || true', cwd=DATA_DIR)
-        if sh("git diff --cached --quiet", cwd=DATA_DIR) != 0:
-            sh('git commit -m "cron state %s"' % ts, cwd=DATA_DIR)
-            sh("git push origin main", cwd=DATA_DIR)
+        hub_env = ssh_env_for("data-core-01")
+        if hub_env:
+            sh('git add -A state/ ci_logs/ 2>/dev/null || true', cwd=DATA_DIR, env=hub_env)
+            if sh("git diff --cached --quiet", cwd=DATA_DIR, env=hub_env) != 0:
+                sh('git commit -m "cron state %s"' % ts, cwd=DATA_DIR, env=hub_env)
+                rc_push = sh("git push origin main", cwd=DATA_DIR, env=hub_env)
+                log("   hub push rc=%d" % rc_push)
+        else:
+            log("!! hub 无 deploy key, state 不落盘")
         log("✅ 本轮完成: %.1f 分, 日志 run_%s.log" % (elapsed_min(), ts))
     except Exception as e:
         import traceback
