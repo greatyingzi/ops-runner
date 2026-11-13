@@ -226,11 +226,15 @@ def prune_logs():
         try: os.remove(os.path.join(d, f))
         except Exception: pass
 
-def auto_sync_repos(manifest):
-    """repo-sync: 新私有仓自动接入(生成 stub, 不执行任何任务)."""
+def auto_sync_repos(manifest, st):
+    """repo-sync: 新私有仓自动接入(生成 stub, 不执行任何任务). 每天最多扫一次, 省 API 配额."""
     tok = (os.environ.get("OPS_ADMIN_TOKEN") or "").strip()
     if (os.environ.get("AUTO_SYNC") or "1") != "1" or not tok:
         return
+    last = float(st.get("repo_sync_at") or 0)
+    if time.time() - last < 86400:
+        return
+    st["repo_sync_at"] = time.time()
     reg = os.path.join(os.getcwd(), "register.py")
     known = {e.get("repo") if isinstance(e, dict) else e for e in manifest.get("repos", [])}
     try:
@@ -279,7 +283,7 @@ def main():
                     run_repo_task(repo, task, st)
                 except subprocess.TimeoutExpired:
                     log("!! %s 超时被杀" % mask(repo)); st["tasks"]["%s/%s" % (repo, task.get("name","?"))] = time.time()
-        auto_sync_repos(manifest)
+        auto_sync_repos(manifest, st)
         # 任务日志统一落 hub(有空闲节流: 无任务执行时只留一行状态)
         os.makedirs(os.path.join(DATA_DIR, "ci_logs"), exist_ok=True)
         acted = len(LOGBUF) > 1  # 除 hub clone 外还有别的命令
