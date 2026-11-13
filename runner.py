@@ -292,6 +292,7 @@ def main():
         hub_env = ssh_env_for("data-core-01")
         if hub_env:
             sh('git add -A state/ ci_logs/ 2>/dev/null || true', cwd=DATA_DIR, env=hub_env)
+            sh('git add -f ci_logs/run_*.log ci_logs/crash_*.log 2>/dev/null || true', cwd=DATA_DIR, env=hub_env)
             if sh("git diff --cached --quiet", cwd=DATA_DIR, env=hub_env) != 0:
                 sh('git commit -m "cron state %s"' % ts, cwd=DATA_DIR, env=hub_env)
                 rc_push = sh("git push origin main", cwd=DATA_DIR, env=hub_env)
