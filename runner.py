@@ -249,9 +249,10 @@ def auto_sync_repos(manifest):
 def main():
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     os.makedirs(WORK, exist_ok=True)
+    write_keys()  # 先用 env bootstrap(env 里必有 hub key), 才能拉 hub
     if clone_repo("data-core-01", DATA_DIR) != 0:
         sys.exit("hub clone failed")
-    write_keys()
+    write_keys()  # 再合并 hub keys 事实源(新增仓也能 clone)
     manifest = json.load(open(os.path.join(DATA_DIR, "tasks", "manifest.json")))
     st = load_state()
     try:
