@@ -1,37 +1,44 @@
 name: scheduled run
 on:
   schedule:
-    - cron: "0 14 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
-      group: { description: "task group", default: "auto" }
-      weekly: { description: "run weekly discovery", default: "0" }
+      only:
+        description: "只跑 repo/name 或 legacy(空=全部到期判定)"
+        default: ""
 permissions:
   contents: read
 concurrency:
   group: scheduled-run
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 350
     env:
-      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      MAX_RUN_MINUTES: "300"
+      DEPLOY_KEYS_JSON: ${{ secrets.DEPLOY_KEYS_JSON }}
+      DBX_SEED_TOKEN: ${{ secrets.DBX_SEED_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
+      YT_COOKIES_B64: ${{ secrets.YT_COOKIES_B64 }}
+      DRAMACPS_EMAIL: ${{ secrets.DRAMACPS_EMAIL }}
+      DRAMACPS_PASSWORD: ${{ secrets.DRAMACPS_PASSWORD }}
+      ADMIN_KEY: ${{ secrets.VIDEOAPP_ADMIN_KEY }}
+      ALERT_SMTP_USER: ${{ secrets.ALERT_SMTP_USER }}
+      ALERT_SMTP_PASS: ${{ secrets.ALERT_SMTP_PASS }}
+      ALERT_TO: ${{ secrets.ALERT_TO }}
       DATA_REPO_GIT: git@github.com:greatyingzi/data-core-01.git
-      TASK_GROUP: ${{ github.event.inputs.group }}
-      WEEKLY: ${{ github.event.inputs.weekly }}
+      ONLY_FILTER: ${{ github.event.inputs.only }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
-      - name: ssh key
+      - name: git identity
         run: |
-          mkdir -p ~/.ssh
-          echo "$DEPLOY_KEY" > ~/.ssh/dk
-          chmod 600 ~/.ssh/dk
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
           git config --global user.name "ops-bot"
           git config --global user.email "bot@users.noreply.github.com"
-          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/dk -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
       - run: python3 runner.py
