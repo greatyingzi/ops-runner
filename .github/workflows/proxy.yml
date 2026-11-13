@@ -1,20 +1,16 @@
 name: deploy proxy
-# 通用事件面执行器：webhook → Worker/Pages Function → repository_dispatch(site-deploy)
-#   payload: { site: "<注册表键>", branch: "main"|"cps-test" }
+# 通用事件面执行器：webhook → CF relay/runner → repository_dispatch(site-deploy)
+#   payload: { site: "<注册表键>", env: "prod"|"preview" }
 # 站点配置来自私有 hub 的 tasks/sites.json（新增站点只加一行 + 密钥，不改本文件）
 on:
   repository_dispatch:
     types: [site-deploy]
   workflow_dispatch:
     inputs:
-      site:
-        description: "站点点键（见 hub tasks/sites.json）"
-        required: true
-      branch:
-        description: "main=生产 / cps-test=预览"
-        default: "cps-test"
+      site: { description: "站点点键（见 hub tasks/sites.json）", required: true }
+      env:  { description: "prod 或 preview", default: "preview" }
 concurrency:
-  group: proxy-${{ github.event.client_payload.site || github.event.inputs.site }}-${{ github.event.client_payload.branch || github.event.inputs.branch }}
+  group: proxy-${{ github.event.client_payload.site || github.event.inputs.site }}-${{ github.event.client_payload.env || github.event.inputs.env }}
   cancel-in-progress: false
 permissions:
   contents: read
@@ -26,7 +22,7 @@ jobs:
       HUB_KEY: ${{ secrets.PROXY_HUB_KEY }}
       SITE_KEYS: ${{ secrets.PROXY_KEYS_JSON }}
       SITE: ${{ github.event.client_payload.site || github.event.inputs.site }}
-      BRANCH: ${{ github.event.client_payload.branch || github.event.inputs.branch || 'cps-test' }}
+      ENV_NAME: ${{ github.event.client_payload.env || github.event.inputs.env || 'preview' }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
@@ -43,24 +39,25 @@ jobs:
           python3 - <<'PY'
           import json, os
           cfg = json.load(open("hub/tasks/sites.json"))["sites"]
-          site = os.environ["SITE"]
+          site = os.environ["SITE"]; envn = os.environ["ENV_NAME"]
           if site not in cfg:
               raise SystemExit("未知站点: %s（可用: %s）" % (site, ",".join(cfg)))
           s = cfg[site]
           if not s.get("enabled", True):
               raise SystemExit("站点已禁用: %s" % site)
-          out = open(os.environ["GITHUB_ENV"], "a")
-          out.write("SITE_REPO=%s\n" % s["repo"])
-          out.write("SITE_PROJECT=%s\n" % s["project"])
-          out.write("SITE_PROD=%s\n" % s.get("prod", ""))
-          out.write("SITE_PREVIEW=%s\n" % s.get("preview", ""))
-          out.write("SITE_PIP=%s\n" % s.get("pip", ""))
-          base = s.get("prod") if os.environ.get("BRANCH") == "main" else s.get("preview")
-          out.write("SITE_BUILD=%s\n" % s["build"].replace("{BASE}", base or ""))
-          out.write("SITE_GATE_PROD=%s\n" % s.get("gate_prod", ""))
-          out.write("SITE_GATE_PREVIEW=%s\n" % s.get("gate_preview", ""))
-          out.close()
-          print("site:", site, "-> repo:", s["repo"], "project:", s["project"])
+          prod = envn != "preview"
+          base = s["prod"] if prod else s["preview"]
+          cf_branch = s["prod_branch"] if prod else s["preview_branch"]
+          gate = s.get("gate_prod") if prod else s.get("gate_preview")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("SITE_REPO=%s\n" % s["repo"])
+              f.write("SITE_PROJECT=%s\n" % s["project"])
+              f.write("SITE_BASE=%s\n" % base)
+              f.write("CF_BRANCH=%s\n" % cf_branch)
+              f.write("SITE_PIP=%s\n" % s.get("pip", ""))
+              f.write("SITE_BUILD=%s\n" % s["build"].replace("{BASE}", base))
+              f.write("SITE_GATE=%s\n" % (gate or ""))
+          print("site=%s env=%s base=%s branch=%s" % (site, envn, base, cf_branch))
           PY
       - name: 站点 deploy key
         run: |
@@ -71,33 +68,29 @@ jobs:
           if site not in keys:
               raise SystemExit("缺少 %s 的 deploy key（PROXY_KEYS_JSON）" % site)
           p = os.path.expanduser("~/.ssh/site_dk")
-          open(p, "w").write(keys[site])
-          os.chmod(p, 0o600)
+          open(p, "w").write(keys[site]); os.chmod(p, 0o600)
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write("GIT_SSH_COMMAND=ssh -i %s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new\n" % p)
           PY
-          git config --global user.name "proxy-bot"
-          git config --global user.email "bot@users.noreply.github.com"
       - name: 拉站点仓
         run: git clone --depth 1 git@github.com:greatyingzi/"$SITE_REPO".git site
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with: { python-version: "3.12" }
       - name: 依赖
-        run: pip install -q $SITE_PIP || true
+        run: |
+          if [ -n "$SITE_PIP" ]; then pip install -q $SITE_PIP; fi
+          if [ -f site/requirements.txt ]; then pip install -q -r site/requirements.txt; fi
       - name: 构建
         working-directory: site
-        env:
-          BASE: ${{ github.event.client_payload.branch == 'main' && 'https://tatescope.com/' || '' }}
         run: |
           sh -c "$SITE_BUILD"
-          if [ "$BRANCH" = "main" ]; then sh -c "$SITE_GATE_PROD"; else sh -c "$SITE_GATE_PREVIEW"; fi
+          if [ -n "$SITE_GATE" ]; then sh -c "$SITE_GATE"; fi
       - name: 部署
         working-directory: site
-        run: npx --yes wrangler@3 pages deploy dist --project-name="$SITE_PROJECT" --branch="$BRANCH" --commit-dirty=true
+        run: npx --yes wrangler@3 pages deploy dist --project-name="$SITE_PROJECT" --branch="$CF_BRANCH" --commit-dirty=true
       - name: 线上校验
         run: |
-          if [ "$BRANCH" = "main" ]; then U="$SITE_PROD"; else U="$SITE_PREVIEW"; fi
           for _ in 1 2 3 4 5 6; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 25 "$U")
-            echo "$U -> $code"; [ "$code" = "200" ] && exit 0; sleep 15
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 25 "$SITE_BASE")
+            echo "$SITE_BASE -> $code"; [ "$code" = "200" ] && exit 0; sleep 15
           done; exit 1
